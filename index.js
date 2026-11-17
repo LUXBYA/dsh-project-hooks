@@ -1028,6 +1028,50 @@ export function apply(ctx, config) {
     }
   })
 
+  // ---- 会话标题（日志只存 sessionId，面板要显示会话名，否则多会话混在一起） ----
+  /** 会话 id → { title, at }；标题基本不变，短 TTL 缓存避免每次轮询都重新折叠日志。 */
+  const titleCache = new Map()
+  const TITLE_TTL_MS = 30000
+
+  /**
+   * 批量解析会话标题，live 会话与历史会话都走 sessionQuery 的日志折叠。
+   * @param {string[]} ids 会话 id 列表
+   * @returns {Promise<Record<string, string>>} 会话 id → 标题（无标题的会话不出现）
+   */
+  async function resolveSessionTitles(ids) {
+    const handles = [...new Set((ids ?? []).map((id) => String(id ?? '')).filter(Boolean))]
+    const titles = {}
+    const now = Date.now()
+    const pending = []
+    for (const id of handles) {
+      const cached = titleCache.get(id)
+      if (cached && now - cached.at < TITLE_TTL_MS) {
+        if (cached.title) titles[id] = cached.title
+        continue
+      }
+      pending.push(id)
+    }
+    if (pending.length === 0) return titles
+    const query = ctx.get?.('sessionQuery')
+    if (!query?.readTitleSnapshots) {
+      for (const id of pending) titleCache.set(id, { title: '', at: now })
+      return titles
+    }
+    const batch = pending.slice(0, 40)
+    try {
+      const results = await query.readTitleSnapshots(batch)
+      results.forEach((result, index) => {
+        const id = batch[index]
+        const title = result?.status === 'rejected' ? '' : String(result?.value?.title?.title ?? '')
+        titleCache.set(id, { title, at: now })
+        if (title) titles[id] = title
+      })
+    } catch (error) {
+      log(`会话标题解析失败：${String(error?.message ?? error)}`)
+    }
+    return titles
+  }
+
   // ---- 面板接口（HTTP：读配置 / 改配置 / 看日志 / 试跑） ----
   const handleApi = async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -1036,12 +1080,15 @@ export function apply(ctx, config) {
       if (req.method === 'GET' && (route === '/' || route === '/bootstrap')) {
         const state = readState()
         const dirs = new Set([...Object.keys(state.seen ?? {}), ...Object.keys(state.projects ?? {})])
+        const runs = readRuns(200)
+        const sessionTitles = await resolveSessionTitles(runs.map((entry) => entry.sessionId))
         sendJson(res, 200, {
           plugin: { name: 'project-hooks', version: 1, dir: dataDir() },
           settings: { ...currentSettings(), overridden: Object.keys(state.overrides ?? {}) },
           runsStats: runsStats(),
           projects: [...dirs].sort().map((dir) => projectView(state, dir)),
-          runs: readRuns(200),
+          runs,
+          sessionTitles,
         })
         return
       }
@@ -1188,8 +1235,15 @@ export function apply(ctx, config) {
     }
   }
 
-  const webServer = ctx.get?.('webServer')
-  if (webServer?.register) {
+  // webServer 由其它 bundle 行提供：冷启动时本插件的 apply 可能早于它就绪，
+  // 直接 ctx.get('webServer') 会拿到 undefined 导致面板接口永远挂不上（面板 404）。
+  // 用 ctx.inject 等服务就绪后再挂载，服务重挂时也会重新执行。
+  ctx.inject(['webServer'], (webCtx) => {
+    const webServer = webCtx.webServer ?? webCtx.get?.('webServer')
+    if (!webServer?.register) {
+      log('webServer 服务不可用，配置面板将无法读取数据')
+      return
+    }
     ctx.effect(() => {
       const dispose = webServer.register({ kind: 'prefix', path: API, handler: handleApi })
       return () => {
@@ -1201,7 +1255,5 @@ export function apply(ctx, config) {
       }
     }, 'project-hooks.http')
     log(`面板接口已挂载：${API}`)
-  } else {
-    log('webServer 服务不可用，配置面板将无法读取数据')
-  }
+  })
 }

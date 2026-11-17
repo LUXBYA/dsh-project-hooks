@@ -445,6 +445,9 @@ window.__ModuleLoader__.load({
       const [project, setProject] = React.useState('')
       const [outcome, setOutcome] = React.useState('')
       const [open, setOpen] = React.useState(null)
+      const [hook, setHook] = React.useState('')
+      const [page, setPage] = React.useState(1)
+      const [pageSize, setPageSize] = React.useState(20)
       const [drafts, setDrafts] = React.useState({})
       const settings = data?.settings ?? {}
       const stats = data?.runsStats ?? { count: 0, bytes: 0 }
@@ -460,9 +463,22 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const runs = (data?.runs ?? []).filter((entry) => (!project || entry.project === project) && (!outcome || String(entry.outcome) === outcome))
+      const runs = (data?.runs ?? []).filter((entry) => (!project || entry.project === project) && (!outcome || String(entry.outcome) === outcome) && (!hook || String(entry.hookId ?? '') === hook))
       const projects = [...new Set((data?.runs ?? []).map((entry) => entry.project).filter(Boolean))]
+      const hooks = [...new Set((data?.runs ?? []).map((entry) => String(entry.hookId ?? '')).filter(Boolean))]
+      // 分页：日志会一直增长（每步一条），整页铺开既滚不动也看不清，所以按页切。
+      const pageCount = Math.max(1, Math.ceil(runs.length / pageSize))
+      const currentPage = Math.min(Math.max(1, page), pageCount)
+      const pageRuns = runs.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+      const goPage = (next) => setPage(Math.min(Math.max(1, Number(next) || 1), pageCount))
       const outcomes = [...new Set((data?.runs ?? []).map((entry) => String(entry.outcome)).filter(Boolean))]
+      const sessionTitles = data?.sessionTitles ?? {}
+      const titleOf = (entry) => sessionTitles[String(entry.sessionId ?? '')] ?? ''
+      const sessionLabel = (entry) => {
+        if (!entry.sessionId) return '—'
+        const id = String(entry.sessionId)
+        return titleOf(entry) || `${id.slice(0, 12)}…`
+      }
       const tone = (value) => (/^(ok|injected)$/.test(String(value)) ? 'ok' : /untru?sted|disabled|skipped|^request$/.test(String(value)) ? 'muted' : 'warn')
       const percent = Math.min(100, Math.round((Number(stats.bytes) || 0) / Math.max(1, Number(settings.runsMaxBytes) || 1) * 100))
 
@@ -486,15 +502,21 @@ window.__ModuleLoader__.load({
         h('div', { style: { ...S.row, alignItems: 'flex-start', marginBottom: 6 } },
           h(Dropdown, {
             value: project,
-            width: 240,
+            width: 226,
             options: [{ value: '', label: '全部项目' }, ...projects.map((dir) => ({ value: dir, label: dir }))],
-            onChange: setProject,
+            onChange: (value) => { setProject(value); setPage(1) },
+          }),
+          h(Dropdown, {
+            value: hook,
+            width: 132,
+            options: [{ value: '', label: '全部钩子' }, ...hooks.map((value) => ({ value, label: value }))],
+            onChange: (value) => { setHook(value); setPage(1) },
           }),
           h(Dropdown, {
             value: outcome,
-            width: 140,
+            width: 132,
             options: [{ value: '', label: '全部结果' }, ...outcomes.map((value) => ({ value, label: value }))],
-            onChange: setOutcome,
+            onChange: (value) => { setOutcome(value); setPage(1) },
           }),
         ),
         h('div', { style: { ...S.row, marginBottom: 8 } },
@@ -539,15 +561,38 @@ window.__ModuleLoader__.load({
             onClick: () => save({ logRequests: settings.logRequests === false }),
           }, settings.logRequests === false ? '不记模型请求' : '记录模型请求'),
         ),
+        h('div', { style: { ...S.row, alignItems: 'center', marginBottom: 6 } },
+          h(Toggle, { on: false, onClick: () => goPage(currentPage - 1) }, '上一页'),
+          h('span', { style: S.sub }, `第 ${currentPage} / ${pageCount} 页 · 共 ${runs.length} 条`),
+          h(Toggle, { on: false, onClick: () => goPage(currentPage + 1) }, '下一页'),
+          h(Dropdown, {
+            value: String(pageSize),
+            width: 104,
+            options: ['10', '20', '50', '100'].map((value) => ({ value, label: `每页 ${value}` })),
+            onChange: (value) => { setPageSize(Number(value) || 20); setPage(1) },
+          }),
+        ),
         runs.length === 0
           ? h('div', { style: { ...S.card, opacity: 0.75 } }, '还没有运行记录。')
-          : h('table', { style: { width: '100%', maxWidth: '100%', tableLayout: 'fixed', borderCollapse: 'collapse' } },
+          : h('div', {
+              style: {
+                maxHeight: 'min(560px, calc(100vh - 400px))',
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                border: '1px solid rgba(127,127,127,.16)',
+                borderRadius: 8,
+              },
+            },
+            h('table', { style: { width: '100%', maxWidth: '100%', tableLayout: 'fixed', borderCollapse: 'collapse' } },
               h('thead', null, h('tr', null,
                 [
-                  [`时间（${tzOffsetLabel()}）`, 168], ['项目', 116], ['钩子', 92], ['结果', 100], ['注入', 156], ['耗时', 62], ['输出', 78], ['细节', 116],
-                ].map(([title, width]) => h('th', { key: title, style: { ...S.th, width } }, title)),
+                  [`时间（${tzOffsetLabel()}）`, 140], ['项目', 92], ['会话', 146], ['钩子', 76], ['结果', 80], ['注入', 116], ['耗时', 52], ['输出', 66], ['细节', 96],
+                ].map(([title, width]) => h('th', {
+                  key: title,
+                  style: { ...S.th, width, position: 'sticky', top: 0, zIndex: 3, background: popupSurface() },
+                }, title)),
               )),
-              h('tbody', null, runs.map((entry, index) => {
+              h('tbody', null, pageRuns.map((entry, index) => {
                 const key = `${entry.ts ?? index}|${index}`
                 const isOpen = open === key
                 return h(React.Fragment, { key },
@@ -557,16 +602,31 @@ window.__ModuleLoader__.load({
                   },
                     h('td', { style: S.td, title: entry.ts ? `${String(entry.ts)}（${tzOffsetLabel()} 本地：${localTime(entry.ts)}）` : undefined }, entry.ts ? localTime(entry.ts) : '—'),
                     h('td', { style: S.td }, entry.project ? String(entry.project).split(/[\\/]/).pop() : '—'),
+                    h('td', {
+                      style: { ...S.td, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                      title: entry.sessionId
+                        ? `${titleOf(entry) || '（未命名会话）'}\n${String(entry.sessionId)}`
+                        : undefined,
+                    }, sessionLabel(entry)),
                     h('td', { style: S.td }, entry.hookId ?? '—'),
                     h('td', { style: S.td }, h('span', { style: S.badge(tone(entry.outcome)) }, String(entry.outcome ?? '—'))),
-                    h('td', { style: S.td }, (() => {
+                    h('td', {
+                      style: S.td,
+                      title: entry.hookId === 'pre-step' && entry.outcome === 'request'
+                        ? Number(entry.injectedCount) > 0
+                          ? '本步有新注入：session-start 脚本这一步产出了内容，作为一条 user 消息加进本次请求（展开可看原文）'
+                          : entry.injectedPresent
+                            ? `本步没有新注入；会话开始时注入的那段内容仍在本次请求里，位置是第 ${entry.injectedAt} 条（messages 从 1 数起，所以这个序号会一直不变）`
+                            : '本步没有注入，本次请求的 messages 里也没有之前注入的内容'
+                        : undefined,
+                    }, (() => {
                       // 注入列：脚本行看「产出多少字」，请求行看「本步注入了什么 / 早先注入的还在不在」。
                       if (entry.hookId === 'pre-step' && entry.outcome === 'request') {
                         if (Number(entry.injectedCount) > 0) {
                           return h('span', { style: S.badge('ok') }, `+${entry.injectedCount} 条 · ${entry.injectedChars ?? 0} 字`)
                         }
-                        if (entry.injectedPresent) return `无（已在第 ${entry.injectedAt} 条）`
-                        return '无'
+                        if (entry.injectedPresent) return h('span', { style: S.badge('muted') }, `沿用 · 第 ${entry.injectedAt} 条`)
+                        return '无注入'
                       }
                       if (entry.contextChars) return `产出 ${entry.contextChars} 字`
                       return '—'
@@ -583,12 +643,14 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                   isOpen
-                    ? h('tr', null, h('td', { colSpan: 8, style: { ...S.td, paddingBottom: 10 } },
+                    ? h('tr', null, h('td', { colSpan: 9, style: { ...S.td, paddingBottom: 10 } },
                         h('div', { style: { minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' } },
                         h('div', { style: { ...S.sub, marginBottom: 2 } },
                           [
                             entry.ts ? `时间 ${localTime(entry.ts)} ${tzOffsetLabel()}（原始 ${String(entry.ts)}）` : null,
-                            entry.sessionId ? `会话 ${String(entry.sessionId).slice(0, 18)}` : null,
+                            entry.sessionId
+                              ? `会话 ${titleOf(entry) ? `${titleOf(entry)} · ` : ''}${String(entry.sessionId).slice(0, 18)}`
+                              : null,
                             entry.toolName ? `工具 ${entry.toolName}` : null,
                             entry.source ? `来源 ${entry.source}` : null,
                             entry.trigger
@@ -637,7 +699,7 @@ window.__ModuleLoader__.load({
                     : null,
                 )
               })),
-            ),
+            )),
         busy ? h('div', { style: S.sub }, '处理中…') : null,
       )
     }
