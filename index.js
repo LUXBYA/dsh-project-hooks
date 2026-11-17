@@ -611,6 +611,8 @@ export function apply(ctx, config) {
   const settings = { ...DEFAULTS, ...(config ?? {}) }
   /** @type {Map<string, object>} 注入失败时留给 pre-step 兜底 */
   const pending = new Map()
+  /** sessionId → 本插件注入过的消息指纹（用于在请求快照里标出「这条是注入的」）。 */
+  const injectedMarks = new Map()
 
   /** 生效设置 = patch config + 面板写进 state.json 的覆盖项（改完即生效）。 */
   const currentSettings = () => ({ ...settings, ...(readState().overrides ?? {}) })
@@ -862,6 +864,18 @@ export function apply(ctx, config) {
         }
       }
 
+      // 记下本步注入内容的指纹：注入只发生一次，之后它作为普通消息留在会话历史里，
+      // 靠这个指纹才能在后续每一步的快照里把它标出来（而不是重新注入）。
+      if (injected.length > 0) {
+        const marks = injectedMarks.get(sessionId) ?? new Set()
+        for (const message of injected) {
+          const text = renderMessage(message, 200)
+          if (text.length >= 40) marks.add(text.slice(0, 60))
+        }
+        injectedMarks.set(sessionId, marks)
+        if (injectedMarks.size > 200) injectedMarks.clear()
+      }
+
       // 3) 把「这一步实际发给模型的 messages」记进运行日志（只记已识别项目的会话）
       if (live.logRequests !== false && Number.isFinite(step) && step > 0) {
         try {
@@ -881,11 +895,17 @@ export function apply(ctx, config) {
             // 真正发出去的 = 已提交历史 + 本步 enter 决策里的 messages（用户批次 + 运行时上下文 + 本插件注入）
             const all = [...history, ...messages]
             // 从最新一条往前攒，攒够上限就停：长会话不必每次渲染整段历史。
+            const marks = injectedMarks.get(sessionId) ?? new Set()
+            const isInjected = (text) => {
+              for (const mark of marks) if (text.includes(mark)) return true
+              return false
+            }
             const lines = []
             let used = 0
             let skipped = 0
             for (let index = all.length - 1; index >= 0; index -= 1) {
-              const line = renderMessage(all[index], perItem)
+              const raw = renderMessage(all[index], perItem)
+              const line = isInjected(raw) ? `⟨注入⟩ ${raw}` : raw
               if (used + line.length > cap && lines.length > 0) {
                 skipped = index + 1
                 break
@@ -893,8 +913,20 @@ export function apply(ctx, config) {
               lines.unshift(line)
               used += line.length + 2
             }
+            const header = []
+            if (skipped > 0) header.push(`……（更早的 ${skipped} 条未展示，共 ${all.length} 条）`)
+            // 注入那条如果已经滑出窗口，单独钉在头部，保证每步都能确认「它还在请求里」。
+            if (marks.size > 0) {
+              let pinned = 0
+              for (let index = 0; index < skipped && pinned < 3; index += 1) {
+                const raw = renderMessage(all[index], 160)
+                if (!isInjected(raw)) continue
+                header.push(`[第 ${index + 1}/${all.length} 条 · 注入内容，仍在本次请求中] ${truncate(raw, 160)}`)
+                pinned += 1
+              }
+            }
             const body = lines.join('\n\n')
-            const text = skipped > 0 ? `……（更早的 ${skipped} 条未展示，共 ${all.length} 条）\n\n${body}` : body
+            const text = header.length > 0 ? `${header.join('\n')}\n\n${body}` : body
             record({
               project: root,
               hookId: 'pre-step',
