@@ -12,3 +12,6 @@
         runsKeep: 2000
         runsMaxBytes: 5242880
         outputLimit: 4000
+        # 每一步实际发给模型的 messages 也记一份快照（只记已识别项目的会话）
+        logRequests: true
+        requestItemLimit: 600

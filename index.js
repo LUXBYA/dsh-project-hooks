@@ -38,6 +38,10 @@ const DEFAULTS = {
   // ---- 运行日志 ----
   /** 是否把脚本输出（stdout/stderr/注入正文）写进日志；关掉只留调用摘要。 */
   captureOutput: true,
+  /** 是否把每一步实际发给模型的 messages 快照写进日志（只记已识别项目的会话）。 */
+  logRequests: true,
+  /** 快照里每条消息最多保留多少字。 */
+  requestItemLimit: 600,
   /** 每段输出最多保留多少字。 */
   outputLimit: 4000,
   /** 条数上限。 */
@@ -372,9 +376,52 @@ function truncate(text, limit) {
   return `${value.slice(0, limit)}\n…（已截断，原文 ${value.length} 字）`
 }
 
+/**
+ * 渲染一条消息里的单个内容块。
+ * @param {any} block 内容块 @param {number} perLimit 最多保留多少字
+ * @returns {string} 文本
+ */
+function renderBlock(block, perLimit) {
+  if (block == null) return ''
+  if (typeof block === 'string') return truncate(block, perLimit)
+  const type = String(block.type ?? '')
+  if (type === 'text' || typeof block.text === 'string') return truncate(String(block.text ?? ''), perLimit)
+  if (/image/i.test(type)) return `[${type}]`
+  if (/tool[-_]?(call|use)/i.test(type)) {
+    const name = String(block.name ?? block.toolName ?? block.tool ?? 'tool')
+    return `→ ${name}(${truncate(JSON.stringify(block.arguments ?? block.input ?? {}), perLimit)})`
+  }
+  if (/tool[-_]?(result|output)/i.test(type)) {
+    const body = block.content ?? block.result ?? block.output ?? block
+    return `← ${truncate(typeof body === 'string' ? body : JSON.stringify(body), perLimit)}`
+  }
+  try {
+    return truncate(JSON.stringify(block), perLimit)
+  } catch {
+    return `[${type || 'block'}]`
+  }
+}
+
+/**
+ * 把一条消息压成可读文本，用于「发给模型的 messages」快照。
+ * @param {any} message 消息 @param {number} perLimit 单块最多保留多少字
+ * @returns {string} 形如 `[user] …`
+ */
+function renderMessage(message, perLimit) {
+  const role = String(message?.role ?? message?.type ?? 'unknown')
+  const content = message?.content
+  const blocks = []
+  if (typeof content === 'string') blocks.push(content)
+  else if (Array.isArray(content)) {
+    for (const block of content) blocks.push(renderBlock(block, perLimit))
+  } else if (content && typeof content === 'object') blocks.push(renderBlock(content, perLimit))
+  else if (typeof message?.text === 'string') blocks.push(String(message.text))
+  const body = blocks.filter(Boolean).join('\n').trim()
+  return `[${role}] ${body || '（空）'}`
+}
+
 /** 内存里记住的日志行数，避免每次追写都重读文件。 */
 let runsLines
-
 /**
  * 当前日志文件的行数（首次调用读一次，之后靠追加自增）。
  * @returns {number} 行数
@@ -785,14 +832,18 @@ export function apply(ctx, config) {
       if (decision?.kind !== 'enter') return decision
       const agent = payload?.agent
       const sessionId = String(agent?.id ?? '')
+      const live = currentSettings()
       const base = decision.messages ?? []
       const messages = [...base]
+      /** 本步新增的注入消息（用于请求快照）。 */
+      const injected = []
 
       // 1) agent.inject 不可用时，agent/created 留下的兜底消息
       const fallback = pending.get(sessionId)
       if (fallback) {
         pending.delete(sessionId)
         messages.push(fallback)
+        injected.push(fallback)
       }
 
       // 2) 每轮第一步跑该项目的 session-start 钩子（hooks.json 写 firstStepOnly: false 时每步都跑）
@@ -804,7 +855,66 @@ export function apply(ctx, config) {
           firstStepSeen.add(key)
           if (firstStepSeen.size > 500) firstStepSeen.clear()
           const message = await dispatchSessionStart(agent, { trigger: 'turn', turn, step })
-          if (message) messages.push(message)
+          if (message) {
+            messages.push(message)
+            injected.push(message)
+          }
+        }
+      }
+
+      // 3) 把「这一步实际发给模型的 messages」记进运行日志（只记已识别项目的会话）
+      if (live.logRequests !== false && Number.isFinite(step) && step > 0) {
+        try {
+          const cwd = await resolveAgentCwd(ctx, agent)
+          const root = cwd ? findProjectRoot(cwd, live.maxWalkUp ?? DEFAULTS.maxWalkUp) : undefined
+          if (root) {
+            const perItem = Math.max(80, Number(live.requestItemLimit) || DEFAULTS.requestItemLimit)
+            const cap = Math.max(200, Number(live.outputLimit) || DEFAULTS.outputLimit)
+            // 已提交的历史（session 的模型可见投影）+ 本步刚被接受的用户批次 + 本插件注入的消息
+            let history = []
+            try {
+              if (typeof agent?.session?.deriveMessages === 'function') history = agent.session.deriveMessages()
+            } catch (error) {
+              log(`读取会话历史失败：${String(error?.message ?? error)}`)
+            }
+            const batch = Array.isArray(payload?.messages) ? payload.messages : []
+            // 真正发出去的 = 已提交历史 + 本步 enter 决策里的 messages（用户批次 + 运行时上下文 + 本插件注入）
+            const all = [...history, ...messages]
+            // 从最新一条往前攒，攒够上限就停：长会话不必每次渲染整段历史。
+            const lines = []
+            let used = 0
+            let skipped = 0
+            for (let index = all.length - 1; index >= 0; index -= 1) {
+              const line = renderMessage(all[index], perItem)
+              if (used + line.length > cap && lines.length > 0) {
+                skipped = index + 1
+                break
+              }
+              lines.unshift(line)
+              used += line.length + 2
+            }
+            const body = lines.join('\n\n')
+            const text = skipped > 0 ? `……（更早的 ${skipped} 条未展示，共 ${all.length} 条）\n\n${body}` : body
+            record({
+              project: root,
+              hookId: 'pre-step',
+              outcome: 'request',
+              trigger: 'turn',
+              sessionId,
+              turn,
+              step,
+              messageCount: all.length,
+              historyCount: history.length,
+              batchCount: batch.length,
+              baseCount: base.length,
+              injectedCount: injected.length,
+              injectedChars: injected.reduce((sum, message) => sum + renderMessage(message, perItem).length, 0),
+              requestChars: text.length,
+              request: truncate(text, cap + 200),
+            })
+          }
+        } catch (error) {
+          log(`请求快照记录失败：${String(error?.message ?? error)}`)
         }
       }
 

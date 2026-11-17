@@ -29,6 +29,22 @@
 | `stdout` / `stderr` + 字数 | 脚本输出原文，按单段上限截断 |
 | `hookJson` | 从 stdout 解析出的钩子 JSON |
 
+### 模型请求快照（`hookId: 'pre-step'`）
+
+开了 `logRequests`（默认开）后，每一步（`agent/pre-step`）都会额外写一条 `hookId: 'pre-step'`、`outcome: 'request'` 的记录，内容就是**这一步真正喂给模型的 messages**（已经算上本步注入的那条消息）：
+
+| 字段 | 含义 |
+|---|---|
+| `request` | 压平后的 messages 文本，每条一行 `[role] 正文`；整体按 `outputLimit` 截断 |
+| `messageCount` / `requestChars` | 条数与总字数（截断前的真实值）|
+| `injectedCount` / `injectedChars` | 这一步里由本插件加进去的消息条数与字数 |
+| `turn` / `step` | 第几轮第几步 |
+
+- 每条消息按 `requestItemLimit`（默认 600 字）单独截断，避免一条超长工具输出把整段挤掉。
+- 只记**已识别项目**（cwd 向上能找到 `.dsh/hooks.json`）的会话，仓库外的会话不写，避免污染日志。
+- 快照只含 `messages`，不含 system prompt 与工具定义；要看完整上下文去「轨迹 → 上下文」。
+- 想关掉：面板里点「记录模型请求」，或 `logRequests: false`。
+
 ### 时间显示
 
 `runs.jsonl` 里的 `ts` 存 UTC ISO（`2026-11-17T05:40:04.275Z`，无歧义）；面板的「时间」列按浏览器本地时区显示，

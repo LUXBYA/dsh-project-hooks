@@ -152,6 +152,7 @@ window.__ModuleLoader__.load({
             h(Toggle, { on: settings.enabled !== false, onClick: () => save({ enabled: settings.enabled === false }) }, settings.enabled === false ? '插件已停用' : '插件已启用'),
             h(Toggle, { on: settings.blockTools !== false, onClick: () => save({ blockTools: settings.blockTools === false }) }, settings.blockTools === false ? '提交门禁已关' : '提交门禁已开'),
             h(Toggle, { on: settings.captureOutput !== false, onClick: () => save({ captureOutput: settings.captureOutput === false }) }, settings.captureOutput === false ? '只记摘要' : '记录输出明细'),
+            h(Toggle, { on: settings.logRequests !== false, onClick: () => save({ logRequests: settings.logRequests === false }) }, settings.logRequests === false ? '不记模型请求' : '记录模型请求'),
             h('span', { style: S.sub }, '改这里立即生效，不用重启'),
           ),
           h('div', { style: { ...S.row, marginTop: 8 } },
@@ -417,10 +418,24 @@ window.__ModuleLoader__.load({
     }
 
     /** 详情里的一个小节。 */
-    function Detail({ title, text }) {
+    function Detail({ title, text, copy }) {
       if (!text) return null
       return h('div', { style: { marginTop: 8 } },
-        h('div', { style: { ...S.sub, fontWeight: 600 } }, title),
+        h('div', { style: { ...S.sub, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 } },
+          h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } }, title),
+          copy
+            ? h(Toggle, {
+                on: false,
+                onClick: () => {
+                  try {
+                    navigator.clipboard?.writeText(String(text))
+                  } catch {
+                    /* 剪贴板不可用就不提示 */
+                  }
+                },
+              }, '复制')
+            : null,
+        ),
         h('pre', { style: S.pre }, text),
       )
     }
@@ -448,7 +463,7 @@ window.__ModuleLoader__.load({
       const runs = (data?.runs ?? []).filter((entry) => (!project || entry.project === project) && (!outcome || String(entry.outcome) === outcome))
       const projects = [...new Set((data?.runs ?? []).map((entry) => entry.project).filter(Boolean))]
       const outcomes = [...new Set((data?.runs ?? []).map((entry) => String(entry.outcome)).filter(Boolean))]
-      const tone = (value) => (/^(ok|injected)$/.test(String(value)) ? 'ok' : /untru?sted|disabled|skipped/.test(String(value)) ? 'muted' : 'warn')
+      const tone = (value) => (/^(ok|injected)$/.test(String(value)) ? 'ok' : /untru?sted|disabled|skipped|^request$/.test(String(value)) ? 'muted' : 'warn')
       const percent = Math.min(100, Math.round((Number(stats.bytes) || 0) / Math.max(1, Number(settings.runsMaxBytes) || 1) * 100))
 
       return h('div', null,
@@ -519,6 +534,10 @@ window.__ModuleLoader__.load({
             on: settings.captureOutput !== false,
             onClick: () => save({ captureOutput: settings.captureOutput === false }),
           }, settings.captureOutput === false ? '只记摘要' : '记录明细'),
+          h(Toggle, {
+            on: settings.logRequests !== false,
+            onClick: () => save({ logRequests: settings.logRequests === false }),
+          }, settings.logRequests === false ? '不记模型请求' : '记录模型请求'),
         ),
         runs.length === 0
           ? h('div', { style: { ...S.card, opacity: 0.75 } }, '还没有运行记录。')
@@ -541,9 +560,10 @@ window.__ModuleLoader__.load({
                     h('td', { style: S.td }, entry.hookId ?? '—'),
                     h('td', { style: S.td }, h('span', { style: S.badge(tone(entry.outcome)) }, String(entry.outcome ?? '—'))),
                     h('td', { style: S.td }, entry.durationMs == null ? '—' : `${entry.durationMs}ms`),
-                    h('td', { style: S.td }, `${entry.stdoutChars ?? 0}/${entry.stderrChars ?? 0}`),
+                    h('td', { style: S.td }, entry.requestChars != null ? `${entry.messageCount ?? 0} 条` : `${entry.stdoutChars ?? 0}/${entry.stderrChars ?? 0}`),
                     h('td', { style: S.td },
                       [
+                        entry.requestChars != null ? `请求 ${entry.requestChars} 字` : null,
                         entry.decision ? `decision=${entry.decision}` : null,
                         entry.contextChars ? `注入 ${entry.contextChars} 字` : null,
                         entry.command ? `命令 ${String(entry.command).slice(0, 24)}…` : null,
@@ -569,7 +589,17 @@ window.__ModuleLoader__.load({
                         h(Detail, { title: '执行的命令', text: entry.command }),
                         h(Detail, { title: `判定 ${entry.decision || '（无）'}${entry.reason ? ` — ${entry.reason}` : ''}`, text: null }),
                         entry.reason ? h(Detail, { title: '阻断/说明理由', text: entry.reason }) : null,
-                        h(Detail, { title: `注入正文（${entry.contextChars ?? 0} 字）`, text: entry.contextText }),
+                        entry.request
+                          ? h(Detail, {
+                              title: `发给模型的 messages（${entry.messageCount ?? 0} 条 · ${entry.requestChars ?? 0} 字${entry.injectedCount ? ` · 其中注入 ${entry.injectedCount} 条` : ''}）`,
+                              text: entry.request,
+                              copy: true,
+                            })
+                          : null,
+                        entry.request && entry.requestChars > String(entry.request).length
+                          ? h('div', { style: { ...S.sub, marginTop: 4 } }, `（快照按单段 ${settings.outputLimit ?? 4000} 字上限截断；完整上下文看「轨迹 → 上下文」）`)
+                          : null,
+                        h(Detail, { title: `注入正文（${entry.contextChars ?? 0} 字）`, text: entry.contextText, copy: true }),
                         h(Detail, { title: `脚本 stdout（${entry.stdoutChars ?? 0} 字）`, text: entry.stdout }),
                         h(Detail, { title: `脚本 stderr（${entry.stderrChars ?? 0} 字）`, text: entry.stderr }),
                         h(Detail, { title: '解析出的钩子 JSON', text: entry.hookJson }),
