@@ -544,7 +544,7 @@ window.__ModuleLoader__.load({
           : h('table', { style: { width: '100%', maxWidth: '100%', tableLayout: 'fixed', borderCollapse: 'collapse' } },
               h('thead', null, h('tr', null,
                 [
-                  [`时间（${tzOffsetLabel()}）`, 178], ['项目', 128], ['钩子', 100], ['结果', 112], ['耗时', 70], ['输出', 74], ['细节', 96],
+                  [`时间（${tzOffsetLabel()}）`, 168], ['项目', 116], ['钩子', 92], ['结果', 100], ['注入', 156], ['耗时', 62], ['输出', 78], ['细节', 116],
                 ].map(([title, width]) => h('th', { key: title, style: { ...S.th, width } }, title)),
               )),
               h('tbody', null, runs.map((entry, index) => {
@@ -559,6 +559,18 @@ window.__ModuleLoader__.load({
                     h('td', { style: S.td }, entry.project ? String(entry.project).split(/[\\/]/).pop() : '—'),
                     h('td', { style: S.td }, entry.hookId ?? '—'),
                     h('td', { style: S.td }, h('span', { style: S.badge(tone(entry.outcome)) }, String(entry.outcome ?? '—'))),
+                    h('td', { style: S.td }, (() => {
+                      // 注入列：脚本行看「产出多少字」，请求行看「本步注入了什么 / 早先注入的还在不在」。
+                      if (entry.hookId === 'pre-step' && entry.outcome === 'request') {
+                        if (Number(entry.injectedCount) > 0) {
+                          return h('span', { style: S.badge('ok') }, `+${entry.injectedCount} 条 · ${entry.injectedChars ?? 0} 字`)
+                        }
+                        if (entry.injectedPresent) return `无（已在第 ${entry.injectedAt} 条）`
+                        return '无'
+                      }
+                      if (entry.contextChars) return `产出 ${entry.contextChars} 字`
+                      return '—'
+                    })()),
                     h('td', { style: S.td }, entry.durationMs == null ? '—' : `${entry.durationMs}ms`),
                     h('td', { style: S.td }, entry.requestChars != null ? `${entry.messageCount ?? 0} 条` : `${entry.stdoutChars ?? 0}/${entry.stderrChars ?? 0}`),
                     h('td', { style: S.td },
@@ -571,7 +583,7 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                   isOpen
-                    ? h('tr', null, h('td', { colSpan: 7, style: { ...S.td, paddingBottom: 10 } },
+                    ? h('tr', null, h('td', { colSpan: 8, style: { ...S.td, paddingBottom: 10 } },
                         h('div', { style: { minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' } },
                         h('div', { style: { ...S.sub, marginBottom: 2 } },
                           [
@@ -589,6 +601,23 @@ window.__ModuleLoader__.load({
                         h(Detail, { title: '执行的命令', text: entry.command }),
                         h(Detail, { title: `判定 ${entry.decision || '（无）'}${entry.reason ? ` — ${entry.reason}` : ''}`, text: null }),
                         entry.reason ? h(Detail, { title: '阻断/说明理由', text: entry.reason }) : null,
+                        entry.hookId === 'pre-step' && entry.outcome === 'request'
+                          ? h('div', {
+                              style: {
+                                ...S.sub,
+                                marginTop: 4,
+                                color: Number(entry.injectedCount) > 0 ? '#4ade80' : undefined,
+                                fontWeight: Number(entry.injectedCount) > 0 ? 600 : 400,
+                              },
+                            }, Number(entry.injectedCount) > 0
+                              ? `本步注入：${entry.injectedCount} 条 / ${entry.injectedChars ?? 0} 字（session-start 脚本产出，作为 user 消息加进本次请求）`
+                              : entry.injectedPresent
+                                ? `本步无新注入；之前注入的内容仍在本次请求里（第 ${entry.injectedAt} 条）`
+                                : '本步无注入，请求里也没有注入内容')
+                          : null,
+                        entry.injectedText
+                          ? h(Detail, { title: `本步注入的内容（${entry.injectedChars ?? 0} 字）`, text: entry.injectedText, copy: true })
+                          : null,
                         entry.request
                           ? h(Detail, {
                               title: `发给模型的 messages（${entry.messageCount ?? 0} 条 · ${entry.requestChars ?? 0} 字${entry.injectedCount ? ` · 其中注入 ${entry.injectedCount} 条` : ''}）`,

@@ -894,11 +894,23 @@ export function apply(ctx, config) {
             const batch = Array.isArray(payload?.messages) ? payload.messages : []
             // 真正发出去的 = 已提交历史 + 本步 enter 决策里的 messages（用户批次 + 运行时上下文 + 本插件注入）
             const all = [...history, ...messages]
+            // 注入正文单独按整段上限截断（不受单条 600 字限制），否则「注入了什么」看不全。
+            const injectLimit = Math.max(perItem, cap)
             // 从最新一条往前攒，攒够上限就停：长会话不必每次渲染整段历史。
             const marks = injectedMarks.get(sessionId) ?? new Set()
             const isInjected = (text) => {
               for (const mark of marks) if (text.includes(mark)) return true
               return false
+            }
+            // 注入内容在这份请求里到底还在不在、在第几条：表格里一眼能看出「本步有没有注入」。
+            let injectedAt = 0
+            if (marks.size > 0) {
+              for (let index = 0; index < all.length; index += 1) {
+                if (isInjected(renderMessage(all[index], 160))) {
+                  injectedAt = index + 1
+                  break
+                }
+              }
             }
             const lines = []
             let used = 0
@@ -940,7 +952,13 @@ export function apply(ctx, config) {
               batchCount: batch.length,
               baseCount: base.length,
               injectedCount: injected.length,
-              injectedChars: injected.reduce((sum, message) => sum + renderMessage(message, perItem).length, 0),
+              injectedChars: injected.reduce((sum, message) => sum + renderMessage(message, injectLimit).length, 0),
+              injectedHook: injected.length > 0 ? 'session-start' : undefined,
+              injectedText: injected.length > 0
+                ? truncate(injected.map((message) => renderMessage(message, injectLimit)).join('\n\n'), cap)
+                : undefined,
+              injectedPresent: injectedAt > 0,
+              injectedAt: injectedAt > 0 ? injectedAt : undefined,
               requestChars: text.length,
               request: truncate(text, cap + 200),
             })
