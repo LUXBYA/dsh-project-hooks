@@ -1,0 +1,61 @@
+{
+  "name": "dsh-project-hooks",
+  "version": "1.0.0",
+  "description": "Per-workspace project hooks: inject project context on each turn and run a compile gate before commits, with a settings panel and a run log.",
+  "type": "module",
+  "license": "MIT",
+  "author": "lxy",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "hooks",
+    "project-hooks",
+    "session-start",
+    "pre-commit",
+    "git-hooks"
+  ],
+  "homepage": "https://github.com/LUXBYA/dsh-project-hooks#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LUXBYA/dsh-project-hooks"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.2.1-rc.1 <0.2.2-0 || >=0.2.2-rc.1 <0.3.0-0"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.1-rc.1 <0.2.2-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "react": "^18.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Project hooks",
+    "description": "Per-workspace project hooks: inject project context on each turn and run a compile gate before commits, with a settings panel and a run log.",
+    "detail": "docs/DETAIL.md"
+  }
+}

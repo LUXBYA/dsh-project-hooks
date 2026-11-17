@@ -1,0 +1,14 @@
+- insert:
+    - id: project-hooks
+      name: 'dsh-project-hooks'
+      config:
+        enabled: true
+        blockTools: true
+        defaultTimeoutMs: 600000
+        # 注入正文最多多少字
+        contextLimit: 2400
+        # 运行日志：是否记输出明细 / 条数上限 / 体积上限（字节）/ 单段输出上限（字）
+        captureOutput: true
+        runsKeep: 2000
+        runsMaxBytes: 5242880
+        outputLimit: 4000
